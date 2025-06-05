@@ -1,0 +1,46 @@
+# Data
+data/raw/
+data/processed/
+*.csv
+*.pkl
+*.h5
+
+# Models
+models/checkpoints/
+models/experiments/
+*.ckpt
+*.pth
+
+# Logs
+logs/
+results/logs/
+wandb/
+.tensorboard/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+.venv/
+poetry.lock
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
