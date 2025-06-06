@@ -1,5 +1,13 @@
 # Transformer-based Stock Price Predictor
 
+## Installation
+
+```bash
+pip install poetry
+poetry config virtualenvs.in-project true
+poetry install
+```
+
 ## Technical Plan
 
 ### Phase 1: Data Collection & Preprocessing
