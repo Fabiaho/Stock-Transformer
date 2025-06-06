@@ -1,0 +1,21 @@
+# config/model_config.yaml
+model:
+  # Architecture
+  d_model: 512
+  n_heads: 8
+  n_layers: 6
+  d_ff: 2048
+  dropout: 0.1
+  max_seq_len: 512
+  
+  # Temporal convolution
+  use_temporal_conv: true
+  conv_channels: [64, 128, 256]
+  
+  # Financial adaptations
+  use_regime_bias: true
+  use_market_regime: false
+  
+  # Multi-horizon
+  use_multi_horizon: false
+  prediction_horizons: [1, 5, 20]

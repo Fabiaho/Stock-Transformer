@@ -1,0 +1,63 @@
+# config/training_config.yaml
+training:
+  # Basic training
+  batch_size: 32
+  max_epochs: 100
+  num_workers: 4
+  
+  # Optimization
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  warmup_steps: 1000
+  scheduler_type: "cosine"  # cosine, plateau, linear
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  
+  # Loss configuration
+  loss_type: "mse"  # mse, huber, financial, combined
+  loss_weights:
+    mse: 0.7
+    direction: 0.2
+    sharpe: 0.1
+  
+  # Early stopping
+  early_stopping: true
+  early_stopping_patience: 20
+  
+  # Checkpointing
+  checkpoint_dir: "models/checkpoints"
+  save_top_k: 3
+  save_last: true
+  
+  # Validation
+  val_check_interval: 1.0
+  
+  # Financial metrics
+  calculate_financial_metrics: true
+  transaction_cost: 0.001  # 10 basis points
+  
+  # Hardware
+  precision: 32
+  deterministic: false
+  benchmark: true
+  
+  # Other
+  log_every_n_steps: 50
+  use_rich_progress: true
+  run_test: true
+  save_final_model: true
+
+logging:
+  # Logging backends
+  use_tensorboard: true
+  use_wandb: false
+  
+  # Directories
+  log_dir: "results/logs"
+  
+  # Weights & Biases config
+  wandb_project: "stock-transformer"
+  wandb_name: null  # auto-generated if null
+  
+  # Attention logging
+  log_attention_weights: true

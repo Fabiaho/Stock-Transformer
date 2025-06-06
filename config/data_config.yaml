@@ -1,0 +1,43 @@
+# config/data_config.yaml
+data:
+  # Stock symbols
+  symbols: 
+    - AAPL
+    - MSFT
+    - GOOGL
+    - AMZN
+    - TSLA
+    - META
+    - NVDA
+    - JPM
+    - V
+    - JNJ
+  
+  # Date range
+  start_date: "2018-01-01"
+  end_date: "2023-12-31"
+  
+  # Sequence configuration
+  sequence_length: 60
+  prediction_horizon: 1
+  
+  # Target configuration
+  target_column: "returns"
+  target_type: "regression"  # or "classification"
+  classification_bins: [-0.01, 0, 0.01]  # for 3-class classification
+  
+  # Features
+  add_technical_indicators: true
+  add_market_data: true
+  market_indices: ["^GSPC", "^VIX", "^DJI", "^IXIC"]
+  
+  # Data processing
+  scale_features: true
+  feature_columns: null  # null means use all available
+  
+  # Caching
+  cache_dir: "data/raw/price_cache"
+  
+  # Train/val/test split
+  train_val_test_split: [0.7, 0.15, 0.15]
+  gap_days: 5  # Gap between train/val and val/test to prevent leakage
