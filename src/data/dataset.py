@@ -1,5 +1,5 @@
 """
-PyTorch Dataset for stock price time series with proper handling of temporal data.
+Fixed Dataset classes with proper metadata handling for DataLoader compatibility.
 """
 
 import torch
@@ -11,6 +11,29 @@ from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def custom_collate_fn(batch):
+    """Custom collate function that handles metadata with timestamps."""
+    if not batch:
+        return {}
+    
+    # Separate tensors from metadata
+    collated = {}
+    
+    for key in batch[0].keys():
+        if key == 'metadata':
+            # For metadata, just keep as list (don't try to stack)
+            collated[key] = [item[key] for item in batch]
+        else:
+            # For tensors, use default stacking
+            values = [item[key] for item in batch]
+            if isinstance(values[0], torch.Tensor):
+                collated[key] = torch.stack(values)
+            else:
+                collated[key] = values
+    
+    return collated
 
 
 class StockSequenceDataset(Dataset):
@@ -33,24 +56,13 @@ class StockSequenceDataset(Dataset):
     ):
         """
         Initialize the dataset.
-        
-        Args:
-            data: DataFrame or dict of DataFrames with stock data
-            sequence_length: Number of time steps to look back
-            prediction_horizon: Number of steps ahead to predict
-            target_column: Column to predict
-            feature_columns: List of feature columns to use (None = all numeric)
-            scale_features: Whether to scale features
-            target_type: Type of prediction task
-            classification_bins: Bins for classification targets
-            min_sequence_length: Minimum valid sequence length
         """
         self.sequence_length = sequence_length
         self.prediction_horizon = prediction_horizon
         self.target_column = target_column
         self.scale_features = scale_features
         self.target_type = target_type
-        self.classification_bins = classification_bins or [-0.01, 0, 0.01]  # down, neutral, up
+        self.classification_bins = classification_bins or [-0.01, 0, 0.01]
         self.min_sequence_length = min_sequence_length or sequence_length
         
         # Process data
@@ -69,7 +81,6 @@ class StockSequenceDataset(Dataset):
     def _process_data(self, data: Union[pd.DataFrame, Dict[str, pd.DataFrame]]) -> pd.DataFrame:
         """Process and combine data into a single DataFrame."""
         if isinstance(data, dict):
-            # Combine multiple stocks
             dfs = []
             for symbol, df in data.items():
                 df = df.copy()
@@ -95,19 +106,15 @@ class StockSequenceDataset(Dataset):
     
     def _get_feature_columns(self) -> List[str]:
         """Get list of feature columns to use."""
-        # Exclude non-feature columns
         exclude_cols = [
             'symbol', 'dividends', 'stock splits', 
             self.target_column, 'open', 'high', 'low', 'close', 'volume'
         ]
         
-        # Get numeric columns
         numeric_cols = self.data.select_dtypes(include=[np.number]).columns.tolist()
-        
-        # Filter out excluded columns
         feature_cols = [col for col in numeric_cols if col not in exclude_cols]
         
-        # Add back OHLCV as they're important features
+        # Add back OHLCV as important features
         ohlcv_cols = ['open', 'high', 'low', 'close', 'volume']
         feature_cols = ohlcv_cols + feature_cols
         
@@ -119,65 +126,48 @@ class StockSequenceDataset(Dataset):
         targets = []
         metadata = []
         
-        # Group by symbol to create sequences per stock
         for symbol, group_df in self.data.groupby('symbol'):
             group_df = group_df.sort_index()
             
-            # Skip if not enough data
             if len(group_df) < self.sequence_length + self.prediction_horizon:
                 continue
                 
-            # Create sequences using sliding window
             for i in range(len(group_df) - self.sequence_length - self.prediction_horizon + 1):
-                # Get sequence data
                 seq_data = group_df.iloc[i:i + self.sequence_length]
-                
-                # Get target data
                 target_idx = i + self.sequence_length + self.prediction_horizon - 1
                 target_data = group_df.iloc[target_idx]
                 
-                # Extract features
                 seq_features = seq_data[self.feature_columns].values
                 
-                # Skip if too many NaN values
                 if np.isnan(seq_features).sum() > len(seq_features) * 0.1:
                     continue
                     
-                # Forward fill NaN values
                 seq_features = pd.DataFrame(seq_features).fillna(method='ffill').fillna(0).values
-                
-                # Get target value
                 target_value = target_data[self.target_column]
                 
                 if self.target_type == 'classification':
-                    # Convert to classification target
                     target_value = np.digitize(target_value, self.classification_bins) - 1
                     
                 sequences.append(seq_features)
                 targets.append(target_value)
                 
-                # Store metadata
+                # Convert timestamps to strings for metadata
                 metadata.append({
                     'symbol': symbol,
-                    'start_date': seq_data.index[0],
-                    'end_date': seq_data.index[-1],
-                    'target_date': target_data.name
+                    'start_date': seq_data.index[0].strftime('%Y-%m-%d'),
+                    'end_date': seq_data.index[-1].strftime('%Y-%m-%d'),
+                    'target_date': target_data.name.strftime('%Y-%m-%d')
                 })
                 
         return sequences, targets, metadata
     
     def _fit_scalers(self):
         """Fit scalers for feature normalization."""
-        from sklearn.preprocessing import StandardScaler, RobustScaler
+        from sklearn.preprocessing import RobustScaler
         
-        # Concatenate all sequences for fitting
         all_data = np.vstack(self.sequences)
-        
-        # Fit scaler
-        self.scaler = RobustScaler()  # More robust to outliers than StandardScaler
+        self.scaler = RobustScaler()
         self.scaler.fit(all_data)
-        
-        # Transform sequences
         self.sequences = [self.scaler.transform(seq) for seq in self.sequences]
         
     def __len__(self) -> int:
@@ -185,15 +175,7 @@ class StockSequenceDataset(Dataset):
         return len(self.sequences)
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """
-        Get a single sequence and target.
-        
-        Args:
-            idx: Index of the sequence
-            
-        Returns:
-            Dictionary with 'sequence', 'target', and 'metadata'
-        """
+        """Get a single sequence and target."""
         sequence = torch.FloatTensor(self.sequences[idx])
         
         if self.target_type == 'classification':
@@ -204,17 +186,12 @@ class StockSequenceDataset(Dataset):
         return {
             'sequence': sequence,
             'target': target,
-            'metadata': self.metadata[idx]
+            'metadata': self.metadata[idx]  # Now contains strings, not Timestamps
         }
     
     def get_feature_names(self) -> List[str]:
         """Get the names of features used."""
         return self.feature_columns
-    
-    def get_sequence_dates(self, idx: int) -> Tuple[datetime, datetime]:
-        """Get start and end dates for a sequence."""
-        meta = self.metadata[idx]
-        return meta['start_date'], meta['end_date']
     
     def split_by_date(
         self, 
@@ -222,17 +199,7 @@ class StockSequenceDataset(Dataset):
         val_end_date: Optional[Union[str, datetime]] = None,
         gap_days: int = 0
     ) -> Tuple['StockSequenceDataset', 'StockSequenceDataset', Optional['StockSequenceDataset']]:
-        """
-        Split dataset by date for proper temporal validation.
-        
-        Args:
-            train_end_date: End date for training data
-            val_end_date: End date for validation data (None = no validation set)
-            gap_days: Gap days between train/val and val/test to prevent leakage
-            
-        Returns:
-            Tuple of (train_dataset, val_dataset, test_dataset)
-        """
+        """Split dataset by date for proper temporal validation."""
         train_indices = []
         val_indices = []
         test_indices = []
@@ -242,12 +209,12 @@ class StockSequenceDataset(Dataset):
         if val_end_date and isinstance(val_end_date, str):
             val_end_date = pd.to_datetime(val_end_date)
             
-        # Add gap
         train_cutoff = train_end_date - timedelta(days=gap_days)
         val_cutoff = val_end_date - timedelta(days=gap_days) if val_end_date else None
         
         for i, meta in enumerate(self.metadata):
-            target_date = meta['target_date']
+            # Convert string back to datetime for comparison
+            target_date = pd.to_datetime(meta['target_date'])
             
             if target_date <= train_cutoff:
                 train_indices.append(i)
@@ -256,7 +223,6 @@ class StockSequenceDataset(Dataset):
             else:
                 test_indices.append(i)
                 
-        # Create subset datasets
         train_dataset = self._create_subset(train_indices)
         val_dataset = self._create_subset(val_indices) if val_indices else None
         test_dataset = self._create_subset(test_indices) if test_indices else None
@@ -267,7 +233,6 @@ class StockSequenceDataset(Dataset):
         """Create a subset of the dataset."""
         subset = StockSequenceDataset.__new__(StockSequenceDataset)
         
-        # Copy attributes
         subset.sequence_length = self.sequence_length
         subset.prediction_horizon = self.prediction_horizon
         subset.target_column = self.target_column
@@ -276,11 +241,9 @@ class StockSequenceDataset(Dataset):
         subset.classification_bins = self.classification_bins
         subset.feature_columns = self.feature_columns
         
-        # Copy scaler if exists
         if hasattr(self, 'scaler'):
             subset.scaler = self.scaler
             
-        # Subset data
         subset.sequences = [self.sequences[i] for i in indices]
         subset.targets = [self.targets[i] for i in indices]
         subset.metadata = [self.metadata[i] for i in indices]
@@ -289,10 +252,7 @@ class StockSequenceDataset(Dataset):
 
 
 class MultiStockDataset(Dataset):
-    """
-    Dataset that handles multiple stocks with cross-asset features.
-    Useful for models that need market context.
-    """
+    """Dataset that handles multiple stocks with cross-asset features."""
     
     def __init__(
         self,
@@ -304,18 +264,7 @@ class MultiStockDataset(Dataset):
         include_market_features: bool = True,
         correlation_lookback: int = 20
     ):
-        """
-        Initialize multi-stock dataset.
-        
-        Args:
-            stock_data: Dictionary mapping symbols to DataFrames
-            market_data: DataFrame with market indices (SPY, VIX, etc.)
-            sequence_length: Sequence length for each stock
-            prediction_horizon: Prediction horizon
-            target_symbols: Symbols to predict (None = all)
-            include_market_features: Whether to include market context
-            correlation_lookback: Lookback for correlation features
-        """
+        """Initialize multi-stock dataset."""
         self.stock_data = stock_data
         self.market_data = market_data
         self.sequence_length = sequence_length
@@ -324,15 +273,50 @@ class MultiStockDataset(Dataset):
         self.include_market_features = include_market_features
         self.correlation_lookback = correlation_lookback
         
-        # Align all data to same dates
+        self._clean_data()
+        self.feature_columns = self._get_feature_columns()
         self._align_data()
-        
-        # Create sequences
         self.sequences = self._create_multi_stock_sequences()
+        
+    def _clean_data(self):
+        """Clean data to ensure numeric types and handle NaN values."""
+        for symbol in self.stock_data:
+            df = self.stock_data[symbol].copy()
+            
+            for col in df.columns:
+                if col != 'symbol':
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            df = df.fillna(method='ffill').fillna(method='bfill').fillna(0)
+            self.stock_data[symbol] = df
+            
+        if self.market_data is not None:
+            for col in self.market_data.columns:
+                self.market_data[col] = pd.to_numeric(self.market_data[col], errors='coerce')
+            
+            self.market_data = self.market_data.fillna(method='ffill').fillna(method='bfill').fillna(0)
+    
+    def _get_feature_columns(self) -> Dict[str, List[str]]:
+        """Get feature columns for each stock."""
+        feature_cols = {}
+        exclude_cols = ['symbol', 'dividends', 'stock splits']
+        
+        for symbol in self.target_symbols:
+            df = self.stock_data[symbol]
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            features = [col for col in numeric_cols if col not in exclude_cols]
+            
+            required_cols = ['open', 'high', 'low', 'close', 'volume']
+            for col in required_cols:
+                if col in df.columns and col not in features:
+                    features.append(col)
+                    
+            feature_cols[symbol] = features
+            
+        return feature_cols
         
     def _align_data(self):
         """Align all stock data to the same dates."""
-        # Get common dates across all stocks
         all_dates = None
         
         for symbol, df in self.stock_data.items():
@@ -344,10 +328,8 @@ class MultiStockDataset(Dataset):
         if self.market_data is not None:
             all_dates = all_dates.intersection(set(self.market_data.index))
             
-        # Convert to sorted list
         self.common_dates = sorted(list(all_dates))
         
-        # Reindex all data
         for symbol in self.stock_data:
             self.stock_data[symbol] = self.stock_data[symbol].loc[self.common_dates]
             
@@ -358,35 +340,48 @@ class MultiStockDataset(Dataset):
         """Create sequences with cross-asset features."""
         sequences = []
         
-        # Calculate rolling correlations if needed
-        if self.include_market_features:
+        correlations = None
+        if self.include_market_features and len(self.target_symbols) > 1:
             correlations = self._calculate_rolling_correlations()
             
-        # Create sequences
-        for i in range(len(self.common_dates) - self.sequence_length - self.prediction_horizon + 1):
+        total_length = len(self.common_dates)
+        max_idx = total_length - self.sequence_length - self.prediction_horizon + 1
+        
+        for i in range(max_idx):
             seq_data = {}
             
-            # Get data for each stock
             for symbol in self.target_symbols:
                 stock_df = self.stock_data[symbol]
+                
+                feature_data = stock_df[self.feature_columns[symbol]].iloc[i:i + self.sequence_length]
+                features_array = feature_data.values.astype(np.float64)
+                
+                target_idx = i + self.sequence_length + self.prediction_horizon - 1
+                if 'returns' in stock_df.columns:
+                    target_value = stock_df['returns'].iloc[target_idx]
+                else:
+                    current_close = stock_df['close'].iloc[target_idx]
+                    prev_close = stock_df['close'].iloc[target_idx - 1]
+                    target_value = (current_close - prev_close) / prev_close if prev_close != 0 else 0
+                
                 seq_data[symbol] = {
-                    'features': stock_df.iloc[i:i + self.sequence_length].values,
-                    'target': stock_df.iloc[i + self.sequence_length + self.prediction_horizon - 1]['returns']
+                    'features': features_array,
+                    'target': float(target_value)
                 }
                 
-            # Add market features
             if self.include_market_features and self.market_data is not None:
-                seq_data['market'] = self.market_data.iloc[i:i + self.sequence_length].values
+                market_features = self.market_data.iloc[i:i + self.sequence_length].values.astype(np.float64)
+                seq_data['market'] = market_features
                 
-            # Add correlation features
-            if self.include_market_features and correlations is not None:
-                seq_data['correlations'] = correlations[i:i + self.sequence_length]
+            if correlations is not None:
+                corr_features = correlations[i:i + self.sequence_length].astype(np.float64)
+                seq_data['correlations'] = corr_features
                 
-            # Add metadata
+            # Convert timestamps to strings for metadata
             seq_data['metadata'] = {
-                'start_date': self.common_dates[i],
-                'end_date': self.common_dates[i + self.sequence_length - 1],
-                'target_date': self.common_dates[i + self.sequence_length + self.prediction_horizon - 1]
+                'start_date': self.common_dates[i].strftime('%Y-%m-%d'),
+                'end_date': self.common_dates[i + self.sequence_length - 1].strftime('%Y-%m-%d'),
+                'target_date': self.common_dates[i + self.sequence_length + self.prediction_horizon - 1].strftime('%Y-%m-%d')
             }
             
             sequences.append(seq_data)
@@ -398,26 +393,27 @@ class MultiStockDataset(Dataset):
         if len(self.target_symbols) < 2:
             return None
             
-        # Get returns for all stocks
         returns_data = {}
         for symbol in self.target_symbols:
-            returns_data[symbol] = self.stock_data[symbol]['returns']
-            
+            if 'returns' in self.stock_data[symbol].columns:
+                returns_data[symbol] = self.stock_data[symbol]['returns']
+            else:
+                close_prices = self.stock_data[symbol]['close']
+                returns_data[symbol] = close_prices.pct_change()
+                
         returns_df = pd.DataFrame(returns_data)
         
-        # Calculate rolling correlations
         correlations = []
         for i in range(len(returns_df)):
             if i < self.correlation_lookback:
-                # Not enough data, use NaN
-                corr_matrix = np.full((len(self.target_symbols), len(self.target_symbols)), np.nan)
+                corr_matrix = np.zeros((len(self.target_symbols), len(self.target_symbols)))
             else:
                 window_data = returns_df.iloc[i-self.correlation_lookback:i]
-                corr_matrix = window_data.corr().values
+                corr_matrix = window_data.corr().fillna(0).values
                 
             correlations.append(corr_matrix.flatten())
             
-        return np.array(correlations)
+        return np.array(correlations, dtype=np.float64)
     
     def __len__(self) -> int:
         """Return number of sequences."""
@@ -427,18 +423,28 @@ class MultiStockDataset(Dataset):
         """Get a single multi-stock sequence."""
         seq_data = self.sequences[idx]
         
-        # Convert to tensors
         output = {}
         for symbol in self.target_symbols:
-            output[f'{symbol}_features'] = torch.FloatTensor(seq_data[symbol]['features'])
-            output[f'{symbol}_target'] = torch.FloatTensor([seq_data[symbol]['target']])
+            features_array = np.ascontiguousarray(seq_data[symbol]['features'], dtype=np.float64)
+            output[f'{symbol}_features'] = torch.from_numpy(features_array).float()
+            output[f'{symbol}_target'] = torch.tensor([seq_data[symbol]['target']], dtype=torch.float32)
             
         if 'market' in seq_data:
-            output['market_features'] = torch.FloatTensor(seq_data['market'])
+            market_array = np.ascontiguousarray(seq_data['market'], dtype=np.float64)
+            output['market_features'] = torch.from_numpy(market_array).float()
             
         if 'correlations' in seq_data:
-            output['correlation_features'] = torch.FloatTensor(seq_data['correlations'])
+            corr_array = np.ascontiguousarray(seq_data['correlations'], dtype=np.float64)
+            output['correlation_features'] = torch.from_numpy(corr_array).float()
             
-        output['metadata'] = seq_data['metadata']
+        output['metadata'] = seq_data['metadata']  # Now contains strings, not Timestamps
         
         return output
+    
+    def get_feature_names(self) -> Dict[str, List[str]]:
+        """Get feature names for each symbol."""
+        return self.feature_columns
+    
+    def get_num_features(self) -> Dict[str, int]:
+        """Get number of features for each symbol."""
+        return {symbol: len(features) for symbol, features in self.feature_columns.items()}

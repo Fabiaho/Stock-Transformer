@@ -1,5 +1,6 @@
 """
-PyTorch Lightning DataModule for stock price prediction.
+Fixed PyTorch Lightning DataModule for stock price prediction.
+Addresses the issue with MultiStockDataset format and proper data splitting.
 """
 
 import pytorch_lightning as pl
@@ -11,9 +12,6 @@ from pathlib import Path
 import logging
 from datetime import datetime, timedelta
 
-# from .price_collector import PriceCollector
-# from .technical_indicators import TechnicalIndicators
-# from .dataset import StockSequenceDataset, MultiStockDataset
 from src.data.collectors.price_collector import PriceCollector
 from src.data.processors.technical_indicators import TechnicalIndicators
 from src.data.dataset import StockSequenceDataset, MultiStockDataset
@@ -41,35 +39,16 @@ class StockDataModule(pl.LightningDataModule):
         target_type: str = 'regression',
         feature_columns: Optional[List[str]] = None,
         add_technical_indicators: bool = True,
-        add_market_data: bool = True,
+        add_market_data: bool = False,  # Changed default to False for simplicity
         market_indices: List[str] = ['^GSPC', '^VIX'],
         scale_features: bool = True,
         cache_dir: Optional[Path] = None,
         gap_days: int = 5,
-        use_weighted_sampling: bool = False
+        use_weighted_sampling: bool = False,
+        classification_bins: Optional[List[float]] = None
     ):
         """
         Initialize the data module.
-        
-        Args:
-            symbols: List of stock symbols to use
-            start_date: Start date for data collection
-            end_date: End date for data collection
-            sequence_length: Length of input sequences
-            prediction_horizon: How many steps ahead to predict
-            batch_size: Batch size for DataLoaders
-            num_workers: Number of workers for DataLoaders
-            train_val_test_split: Split ratios
-            target_column: Column to predict
-            target_type: 'regression' or 'classification'
-            feature_columns: Specific features to use
-            add_technical_indicators: Whether to add technical indicators
-            add_market_data: Whether to add market indices
-            market_indices: Market indices to include
-            scale_features: Whether to scale features
-            cache_dir: Directory for caching data
-            gap_days: Gap between train/val/test sets
-            use_weighted_sampling: Use weighted sampling for imbalanced classes
         """
         super().__init__()
         
@@ -91,6 +70,7 @@ class StockDataModule(pl.LightningDataModule):
         self.cache_dir = cache_dir
         self.gap_days = gap_days
         self.use_weighted_sampling = use_weighted_sampling
+        self.classification_bins = classification_bins
         
         # Initialize components
         self.price_collector = PriceCollector(cache_dir=cache_dir)
@@ -125,9 +105,6 @@ class StockDataModule(pl.LightningDataModule):
     def setup(self, stage: Optional[str] = None):
         """
         Set up datasets for training/validation/testing.
-        
-        Args:
-            stage: Current stage ('fit', 'test', or None)
         """
         # Load all data
         stock_data = self.price_collector.fetch_multiple_stocks(
@@ -144,52 +121,20 @@ class StockDataModule(pl.LightningDataModule):
                 stock_data[symbol] = self.technical_indicators.add_all_indicators(
                     stock_data[symbol]
                 )
-                
-        # Load market data
-        market_data = None
-        if self.add_market_data:
-            market_dict = self.price_collector.fetch_multiple_stocks(
-                self.market_indices,
-                self.start_date,
-                self.end_date,
-                use_cache=True
-            )
-            
-            # Combine market indices into single DataFrame
-            market_dfs = []
-            for idx_symbol, df in market_dict.items():
-                if self.add_technical_indicators:
-                    df = self.technical_indicators.add_all_indicators(df)
-                    
-                # Prefix columns with index symbol
-                df.columns = [f"{idx_symbol}_{col}" for col in df.columns]
-                market_dfs.append(df)
-                
-            if market_dfs:
-                market_data = pd.concat(market_dfs, axis=1)
-                
-        # Create full dataset
-        if self.add_market_data and market_data is not None:
-            # Use multi-stock dataset
-            full_dataset = MultiStockDataset(
-                stock_data=stock_data,
-                market_data=market_data,
-                sequence_length=self.sequence_length,
-                prediction_horizon=self.prediction_horizon,
-                target_symbols=self.symbols
-            )
-        else:
-            # Use single stock dataset
-            full_dataset = StockSequenceDataset(
-                data=stock_data,
-                sequence_length=self.sequence_length,
-                prediction_horizon=self.prediction_horizon,
-                target_column=self.target_column,
-                feature_columns=self.feature_columns,
-                scale_features=self.scale_features,
-                target_type=self.target_type
-            )
-            
+        
+        # For now, always use StockSequenceDataset for consistency
+        # You can enable MultiStockDataset later after fixing the model compatibility
+        full_dataset = StockSequenceDataset(
+            data=stock_data,
+            sequence_length=self.sequence_length,
+            prediction_horizon=self.prediction_horizon,
+            target_column=self.target_column,
+            feature_columns=self.feature_columns,
+            scale_features=self.scale_features,
+            target_type=self.target_type,
+            classification_bins=self.classification_bins
+        )
+        
         # Calculate split dates
         date_range = pd.date_range(start=self.start_date, end=self.end_date, freq='D')
         total_days = len(date_range)
@@ -201,45 +146,21 @@ class StockDataModule(pl.LightningDataModule):
         val_end_date = date_range[train_days + val_days]
         
         # Split dataset by date
-        if isinstance(full_dataset, StockSequenceDataset):
-            self.train_dataset, self.val_dataset, self.test_dataset = full_dataset.split_by_date(
-                train_end_date=train_end_date,
-                val_end_date=val_end_date,
-                gap_days=self.gap_days
-            )
-        else:
-            # For MultiStockDataset, implement custom splitting
-            self._split_multi_stock_dataset(full_dataset, train_end_date, val_end_date)
+        self.train_dataset, self.val_dataset, self.test_dataset = full_dataset.split_by_date(
+            train_end_date=train_end_date,
+            val_end_date=val_end_date,
+            gap_days=self.gap_days
+        )
             
         logger.info(f"Dataset sizes - Train: {len(self.train_dataset)}, "
                    f"Val: {len(self.val_dataset) if self.val_dataset else 0}, "
                    f"Test: {len(self.test_dataset) if self.test_dataset else 0}")
-        
-    def _split_multi_stock_dataset(
-        self, 
-        dataset: MultiStockDataset,
-        train_end_date: datetime,
-        val_end_date: datetime
-    ):
-        """Split MultiStockDataset by date."""
-        # This is a simplified version - in practice, you'd want to properly
-        # implement date-based splitting for MultiStockDataset
-        total_len = len(dataset)
-        train_len = int(total_len * self.train_val_test_split[0])
-        val_len = int(total_len * self.train_val_test_split[1])
-        
-        from torch.utils.data import Subset
-        
-        self.train_dataset = Subset(dataset, range(0, train_len))
-        self.val_dataset = Subset(dataset, range(train_len, train_len + val_len))
-        self.test_dataset = Subset(dataset, range(train_len + val_len, total_len))
         
     def train_dataloader(self) -> DataLoader:
         """Create training DataLoader."""
         sampler = None
         
         if self.use_weighted_sampling and self.target_type == 'classification':
-            # Calculate class weights for balanced sampling
             sampler = self._create_weighted_sampler(self.train_dataset)
             
         return DataLoader(
@@ -280,12 +201,10 @@ class StockDataModule(pl.LightningDataModule):
         
     def _create_weighted_sampler(self, dataset) -> WeightedRandomSampler:
         """Create weighted sampler for imbalanced classes."""
-        # Get all targets
         targets = []
         for i in range(len(dataset)):
             targets.append(dataset[i]['target'].item())
             
-        # Calculate class weights
         class_counts = np.bincount(targets)
         class_weights = 1.0 / class_counts
         weights = [class_weights[t] for t in targets]
