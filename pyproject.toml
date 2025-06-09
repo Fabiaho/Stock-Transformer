@@ -17,6 +17,7 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = "^3.10,<3.12"
+setuptools = "^69.0.0,<81.0.0"
 # Core ML dependencies
 torch = "^2.1.0"
 pytorch-lightning = "^2.1.0"
