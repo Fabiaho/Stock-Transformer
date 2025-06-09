@@ -221,8 +221,11 @@ class StockTransformerLightning(pl.LightningModule):
         # Log basic metrics
         self.log('val/loss', loss, on_step=False, on_epoch=True, prog_bar=True)
         
-        # Store attention weights for visualization (only for first batch)
-        if batch_idx == 0 and self.hparams.log_attention_weights:
+        # Store attention weights for visualization (only for first batch and if enabled)
+        if (batch_idx == 0 and 
+            self.hparams.log_attention_weights and 
+            'attention_weights' in outputs and 
+            outputs['attention_weights']):
             self.validation_attention_weights = outputs['attention_weights']
         
         # Store outputs for epoch-end processing
@@ -357,7 +360,7 @@ class StockTransformerLightning(pl.LightningModule):
             return optimizer
             
     def _log_attention_visualization(self):
-        """Log attention weight visualizations to wandb."""
+        """Log attention weight visualizations with proper logger detection."""
         if not self.validation_attention_weights:
             return
             
@@ -368,23 +371,57 @@ class StockTransformerLightning(pl.LightningModule):
             # Average over heads
             attn_avg = attn_weights.mean(axis=0)
             
-            # Create heatmap
+            # Create heatmap with proper figure management
+            import matplotlib
+            matplotlib.use('Agg')  # Use non-interactive backend
             import matplotlib.pyplot as plt
+            import numpy as np
+            
+            # Close any existing figures to prevent memory issues
+            plt.close('all')
+            
             fig, ax = plt.subplots(figsize=(10, 8))
             im = ax.imshow(attn_avg, cmap='Blues', aspect='auto')
             ax.set_xlabel('Key Position')
             ax.set_ylabel('Query Position')
-            ax.set_title('Average Attention Weights (Layer 1)')
+            ax.set_title(f'Average Attention Weights (Layer 1) - Epoch {self.current_epoch}')
             plt.colorbar(im)
             
-            # Log to wandb
-            if self.logger and hasattr(self.logger, 'experiment'):
-                self.logger.experiment.log({
-                    'attention_heatmap': wandb.Image(fig)
-                })
-            plt.close()
+            # Log based on logger type
+            if self.logger:
+                if hasattr(self.logger, 'experiment'):
+                    # Check if it's wandb or tensorboard
+                    if hasattr(self.logger.experiment, 'log'):
+                        # Weights & Biases
+                        import wandb
+                        self.logger.experiment.log({
+                            'attention_heatmap': wandb.Image(fig),
+                            'epoch': self.current_epoch
+                        })
+                    elif hasattr(self.logger.experiment, 'add_figure'):
+                        # TensorBoard
+                        self.logger.experiment.add_figure(
+                            'attention_heatmap', 
+                            fig, 
+                            global_step=self.current_epoch
+                        )
+                    else:
+                        # Fallback: save to file
+                        import os
+                        os.makedirs('results/attention_plots', exist_ok=True)
+                        fig.savefig(f'results/attention_plots/attention_epoch_{self.current_epoch}.png', 
+                                dpi=150, bbox_inches='tight')
+                        print(f"Attention plot saved to results/attention_plots/attention_epoch_{self.current_epoch}.png")
+            
+            # Always close the figure to prevent memory leaks
+            plt.close(fig)
+        
         except Exception as e:
             print(f"Warning: Failed to log attention visualization: {e}")
+            # Don't let visualization errors break training
+            # Close any figures that might be open
+            import matplotlib.pyplot as plt
+            plt.close('all')
         
     def on_train_epoch_end(self):
         """Called at the end of training epoch."""
