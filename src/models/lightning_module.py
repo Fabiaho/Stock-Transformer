@@ -1,5 +1,6 @@
 """
 PyTorch Lightning module for training the stock transformer model.
+Updated for PyTorch Lightning 2.0+ compatibility.
 """
 
 import pytorch_lightning as pl
@@ -95,7 +96,8 @@ class StockTransformerLightning(pl.LightningModule):
                 calculate_calmar=True
             )
             
-        # For attention visualization
+        # For storing validation outputs
+        self.validation_step_outputs = []
         self.validation_attention_weights = []
         
     def _setup_losses(self):
@@ -222,19 +224,26 @@ class StockTransformerLightning(pl.LightningModule):
         # Store attention weights for visualization (only for first batch)
         if batch_idx == 0 and self.hparams.log_attention_weights:
             self.validation_attention_weights = outputs['attention_weights']
-            
-        return {
+        
+        # Store outputs for epoch-end processing
+        step_output = {
             'loss': loss,
             'predictions': predictions,
             'targets': targets,
             'metadata': batch.get('metadata', None)
         }
+        self.validation_step_outputs.append(step_output)
+        
+        return step_output
     
-    def validation_epoch_end(self, outputs: List[Dict[str, torch.Tensor]]):
-        """Aggregate validation metrics."""
+    def on_validation_epoch_end(self):
+        """Aggregate validation metrics at epoch end."""
+        if not self.validation_step_outputs:
+            return
+            
         # Gather all predictions and targets
-        all_preds = torch.cat([x['predictions'] for x in outputs])
-        all_targets = torch.cat([x['targets'] for x in outputs])
+        all_preds = torch.cat([x['predictions'] for x in self.validation_step_outputs])
+        all_targets = torch.cat([x['targets'] for x in self.validation_step_outputs])
         
         if self.hparams.output_type == 'regression':
             # Regression metrics
@@ -247,7 +256,7 @@ class StockTransformerLightning(pl.LightningModule):
             # R-squared
             ss_res = torch.sum((all_targets.squeeze() - all_preds.squeeze()) ** 2)
             ss_tot = torch.sum((all_targets.squeeze() - all_targets.mean()) ** 2)
-            r2 = 1 - ss_res / ss_tot
+            r2 = 1 - ss_res / ss_tot if ss_tot > 0 else torch.tensor(0.0)
             self.log('val/r2', r2)
             
             # Financial metrics
@@ -255,13 +264,16 @@ class StockTransformerLightning(pl.LightningModule):
                 returns_pred = all_preds.squeeze().cpu().numpy()
                 returns_true = all_targets.squeeze().cpu().numpy()
                 
-                metrics = self.financial_metrics.calculate_all_metrics(
-                    returns_true, returns_pred
-                )
-                
-                for name, value in metrics.items():
-                    if not np.isnan(value) and not np.isinf(value):
-                        self.log(f'val/{name}', value)
+                try:
+                    metrics = self.financial_metrics.calculate_all_metrics(
+                        returns_true, returns_pred
+                    )
+                    
+                    for name, value in metrics.items():
+                        if not np.isnan(value) and not np.isinf(value):
+                            self.log(f'val/{name}', value)
+                except Exception as e:
+                    print(f"Warning: Failed to calculate financial metrics: {e}")
                         
         else:  # classification
             # Classification metrics
@@ -282,13 +294,16 @@ class StockTransformerLightning(pl.LightningModule):
         if self.logger and self.hparams.log_attention_weights and self.validation_attention_weights:
             self._log_attention_visualization()
             
+        # Clear stored outputs
+        self.validation_step_outputs.clear()
+        
     def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
         """Test step - similar to validation but might include additional metrics."""
         return self.validation_step(batch, batch_idx)
     
-    def test_epoch_end(self, outputs: List[Dict[str, torch.Tensor]]):
+    def on_test_epoch_end(self):
         """Aggregate test metrics."""
-        self.validation_epoch_end(outputs)  # Reuse validation logic
+        self.on_validation_epoch_end()  # Reuse validation logic
         
         # Additional test-specific metrics can be added here
         if self.hparams.calculate_financial_metrics:
@@ -346,33 +361,39 @@ class StockTransformerLightning(pl.LightningModule):
         if not self.validation_attention_weights:
             return
             
-        # Take first sample from first layer
-        attn_weights = self.validation_attention_weights[0][0].detach().cpu().numpy()
-        
-        # Average over heads
-        attn_avg = attn_weights.mean(axis=0)
-        
-        # Create heatmap
-        import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(figsize=(10, 8))
-        im = ax.imshow(attn_avg, cmap='Blues', aspect='auto')
-        ax.set_xlabel('Key Position')
-        ax.set_ylabel('Query Position')
-        ax.set_title('Average Attention Weights (Layer 1)')
-        plt.colorbar(im)
-        
-        # Log to wandb
-        if self.logger and hasattr(self.logger, 'experiment'):
-            self.logger.experiment.log({
-                'attention_heatmap': wandb.Image(fig)
-            })
-        plt.close()
+        try:
+            # Take first sample from first layer
+            attn_weights = self.validation_attention_weights[0][0].detach().cpu().numpy()
+            
+            # Average over heads
+            attn_avg = attn_weights.mean(axis=0)
+            
+            # Create heatmap
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots(figsize=(10, 8))
+            im = ax.imshow(attn_avg, cmap='Blues', aspect='auto')
+            ax.set_xlabel('Key Position')
+            ax.set_ylabel('Query Position')
+            ax.set_title('Average Attention Weights (Layer 1)')
+            plt.colorbar(im)
+            
+            # Log to wandb
+            if self.logger and hasattr(self.logger, 'experiment'):
+                self.logger.experiment.log({
+                    'attention_heatmap': wandb.Image(fig)
+                })
+            plt.close()
+        except Exception as e:
+            print(f"Warning: Failed to log attention visualization: {e}")
         
     def on_train_epoch_end(self):
         """Called at the end of training epoch."""
         # Log current learning rate
-        current_lr = self.optimizers().param_groups[0]['lr']
-        self.log('train/learning_rate', current_lr)
+        try:
+            current_lr = self.optimizers().param_groups[0]['lr']
+            self.log('train/learning_rate', current_lr)
+        except:
+            pass
         
     def predict_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
         """Prediction step for inference."""
