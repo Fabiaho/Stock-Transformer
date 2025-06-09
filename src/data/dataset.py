@@ -142,7 +142,7 @@ class StockSequenceDataset(Dataset):
                 if np.isnan(seq_features).sum() > len(seq_features) * 0.1:
                     continue
                     
-                seq_features = pd.DataFrame(seq_features).fillna(method='ffill').fillna(0).values
+                seq_features = pd.DataFrame(seq_features).ffill().fillna(0).values
                 target_value = target_data[self.target_column]
                 
                 if self.target_type == 'classification':
