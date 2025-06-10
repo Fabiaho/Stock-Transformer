@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 from src.data.collectors.price_collector import PriceCollector
 from src.data.processors.technical_indicators import TechnicalIndicators
-from src.data.dataset import StockSequenceDataset, MultiStockDataset
+from src.data.dataset import StockSequenceDataset, MultiStockDataset, custom_collate_fn
 
 logger = logging.getLogger(__name__)
 

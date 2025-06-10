@@ -240,7 +240,9 @@ class TechnicalIndicators:
         
         try:
             # Money Flow Index
-            df['mfi'] = ta.mfi(df['high'], df['low'], df['close'], df['volume'], length=14)
+            mfi_result = ta.mfi(df['high'], df['low'], df['close'], df['volume'], length=14)
+            if mfi_result is not None:
+                df['mfi'] = mfi_result.astype(np.float64)  # Ensure proper dtype
         except Exception as e:
             warnings.warn(f"Failed to calculate MFI: {e}")
         

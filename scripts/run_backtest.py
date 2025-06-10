@@ -64,10 +64,11 @@ def get_predictions(model: StockTransformerLightning, datamodule: StockDataModul
             actuals.append(target)
             
             # Extract dates and symbols from metadata
-            for meta in metadata:
-                dates.append(pd.to_datetime(meta['target_date']))
-                symbols.append(meta['symbol'])
-                metadata_list.append(meta)
+            if metadata:
+                for meta in metadata:
+                    dates.append(pd.to_datetime(meta['target_date']))
+                    symbols.append(meta['symbol'])
+                    metadata_list.append(meta)
     
     # Concatenate all predictions
     predictions = np.concatenate(predictions, axis=0)
